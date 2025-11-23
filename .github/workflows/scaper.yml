@@ -23,8 +23,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scraper
+      - name: Run scraper Łódż
         run: python scaper.py --city lodz --pages 8 --output data/ogloszenia_lodz.csv
+
+      - name: Run scraper Kraków
+        run: python scaper.py --city krakow --pages 10 --output data/ogloszenia_krakow.csv
 
       - name: Commit changes
         run: |
