@@ -48,6 +48,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git pull
           
           git add -f data/ogloszenia_${{ matrix.city }}.csv
           git commit -m "Update scraped data for ${{ matrix.city }} [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "No changes to commit"
