@@ -34,13 +34,13 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -48,17 +48,19 @@ jobs:
       - name: Run scraper for ${{ matrix.city }}
         run: python scaper.py --city ${{ matrix.city }} --pages ${{ matrix.pages }} --output data/ogloszenia_${{ matrix.city }}.csv
 
-      - name: Commit changes
+      - name: Commit and push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config pull.rebase true
           
-          git add -f data/ogloszenia_${{ matrix.city }}.csv
-          git commit -m "Update scraped data for ${{ matrix.city }} [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "No changes to commit"
-          
-          # Ponownie synchronizuj przed push, na wypadek gdyby inne zadanie już wypushowało zmiany
+          # Synchronizuj przed commitem (max-parallel: 1 zapewnia sekwencyjność, ale pull jest bezpieczny)
           git pull --rebase origin main || true
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+          git add -f data/ogloszenia_${{ matrix.city }}.csv
+          if git diff --staged --quiet; then
+            echo "No changes to commit for ${{ matrix.city }}"
+          else
+            git commit -m "Update scraped data for ${{ matrix.city }} [$(date +'%Y-%m-%d %H:%M:%S')]"
+            git push origin main
+          fi
