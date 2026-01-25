@@ -32,6 +32,9 @@ jobs:
       - name: Run scraper
         run: python scaper.py --city wroclaw --pages 8 --output data/ogloszenia_wroclaw.csv
       
+      - name: Run scraper
+        run: python scaper.py --city warszawa --pages 12 --output data/ogloszenia_warszawa.csv
+      
       - name: Commit changes
         run: |
           git config --global user.name "github-actions[bot]"
