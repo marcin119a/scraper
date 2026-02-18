@@ -1,3 +1,4 @@
+import re
 import requests
 import csv
 from bs4 import BeautifulSoup
@@ -8,93 +9,153 @@ import os
 # Stałe
 BASE_URL = 'https://adresowo.pl'
 
-# Nagłówki CSV (wszystkie dane jako stringi)
+# Nagłówki CSV (zgodne ze strukturą z adresowo.pl)
 CSV_HEADERS = [
-    'locality',
-    'street',
-    'rooms',
-    'area',
-    'price_total_zl',
-    'price_sqm_zl',
-    'owner_type',
-    'date_posted',
-    'photo_count',
-    'url',
-    'image_url'
+    'ID',
+    'Cena',
+    'Metraż',
+    'Pokoje',
+    'Lokalizacja',
+    'Ulica',
+    'Typ',
+    'Bez Pośredników',
+    'Opis',
+    'Link'
 ]
 
-# Nagłówki HTTP, aby udawać przeglądarkę
+# Nagłówki HTTP, aby udawać przeglądarkę i uniknąć blokady
 HTTP_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
-def parse_listing(item):
+
+def _clean(s):
+    """Usuwa twarde spacje i normalizuje białe znaki."""
+    if not s:
+        return ''
+    return s.replace('\xa0', ' ').strip()
+
+
+def _parse_price(s):
+    """Cena ze stringa (np. '635 000 zł') → int zł lub None."""
+    if not s:
+        return None
+    digits = re.sub(r'[^\d]', '', s)
+    if not digits:
+        return None
+    try:
+        n = int(digits)
+        return n if n > 0 else None
+    except ValueError:
+        return None
+
+
+def _parse_area(s):
+    """Metraż ze stringa (np. '50 m²', '50,25 m²') → float m² lub None."""
+    if not s:
+        return None
+    s = s.replace(',', '.')
+    m = re.search(r'[\d.]+', s)
+    if not m:
+        return None
+    try:
+        n = float(m.group(0))
+        return n if n > 0 else None
+    except ValueError:
+        return None
+
+
+def _parse_rooms(s):
+    """Liczba pokoi ze stringa (np. '3', '3 pok.') → int lub None."""
+    if not s:
+        return None
+    m = re.search(r'^\s*(\d+)\s*(?:pok\.?)?\s*$', s.strip(), re.IGNORECASE)
+    if not m:
+        m = re.search(r'(\d+)\s*pok', s, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+        return n if n > 0 else None
+    except (ValueError, IndexError):
+        return None
+
+
+def parse_listing(offer):
     """
-    Pobiera dane z pojedynczego elementu ogłoszenia (tagu <section>).
+    Pobiera dane z pojedynczego elementu ogłoszenia (div[data-offer-card]).
+    Używa selektorów zgodnych ze strukturą HTML adresowo.pl.
     Zwraca listę stringów lub None w przypadku błędu.
     """
     try:
-        # --- Lokalizacja i Ulica ---
-        header = item.select_one('.result-info__header')
-        location = header.strong.get_text(strip=True) if header and header.strong else ''
-        address = header.select_one('.result-info__address').get_text(strip=True) if header and header.select_one('.result-info__address') else ''
+        text = offer.get_text()
+        text_lower = text.lower()
 
-        # --- Pokoje i Metraż ---
-        basics = item.select('.result-info__basic:not(.result-info__basic--owner)')
-        rooms = basics[0].b.get_text(strip=True) if len(basics) > 0 and basics[0].b else ''
-        area = basics[1].b.get_text(strip=True) if len(basics) > 1 and basics[1].b else ''
+        # ID oferty
+        offer_id = offer.get('data-id', '')
 
-        # --- Ceny ---
-        # Używamy .replace('\xa0', '') do usunięcia twardych spacji (nbsp)
-        price_total_tag = item.select_one('.result-info__price--total span')
-        price_total = price_total_tag.get_text(strip=True).replace('\xa0', '') if price_total_tag else ''
+        # Cena, metraż, pokoje – z p.flex-auto.text-base.text-neutral-800 > span.font-bold
+        stats = offer.select('p.flex-auto.text-base.text-neutral-800')
+        price = ''
+        area = ''
+        rooms = ''
+        if len(stats) > 0:
+            bold = stats[0].find('span', class_='font-bold')
+            price = _clean(bold.get_text()) if bold else ''
+        if len(stats) > 1:
+            bold = stats[1].find('span', class_='font-bold')
+            area = _clean(bold.get_text()) if bold else ''
+        if len(stats) > 2:
+            bold = stats[2].find('span', class_='font-bold')
+            rooms = _clean(bold.get_text()) if bold else ''
 
-        price_sqm_tag = item.select_one('.result-info__price--per-sqm span')
-        price_sqm = price_sqm_tag.get_text(strip=True).replace('\xa0', '') if price_sqm_tag else ''
+        # Link do oferty
+        link_tag = offer.find('a', href=True)
+        link = ''
+        if link_tag and link_tag.get('href'):
+            href = link_tag['href']
+            link = (BASE_URL + href) if not href.startswith('http') else href
 
-        # --- Typ Oferty (Bezpośrednio lub Pośrednik) ---
-        owner_tag = item.select_one('.result-info__basic--owner')
-        # Zakładamy, że jeśli nie ma tagu "Bez pośredników", to jest to oferta od pośrednika
-        owner_type = owner_tag.get_text(strip=True) if owner_tag else 'Pośrednik'
+        # Lokalizacja i ulica
+        location_el = offer.select_one('span.line-clamp-1.font-bold')
+        location = _clean(location_el.get_text()) if location_el else ''
+        street_el = offer.select_one('span.line-clamp-1.text-neutral-900')
+        street = _clean(street_el.get_text()) if street_el else ''
 
-        # --- Dane z sekcji zdjęcia ---
-        date_added_tag = item.select_one('.result-photo__date span')
-        date_added = date_added_tag.get_text(strip=True) if date_added_tag else ''
+        # Bez pośredników
+        is_private = 'Tak' if 'bez pośredników' in text_lower else 'Nie'
 
-        photo_count_tag = item.select_one('.result-photo__photos')
-        # .get_text(strip=True) inteligentnie pominie ikonę SVG i weźmie samą liczbę
-        photo_count = photo_count_tag.get_text(strip=True) if photo_count_tag else ''
+        # Opis (krótki w karcie)
+        desc_el = offer.select_one('p.line-clamp-4')
+        description = _clean(desc_el.get_text()) if desc_el else ''
 
-        # --- Linki ---
-        link_tag = item.select_one('a')
-        link = BASE_URL + link_tag['href'] if link_tag and link_tag.has_attr('href') else ''
+        # Konwersje liczbowo do CSV (puste gdy nie uda się sparsować)
+        price_num = _parse_price(price)
+        area_num = _parse_area(area)
+        rooms_num = _parse_rooms(rooms)
 
-        image_tag = item.select_one('.result-photo__image')
-        image_url = image_tag['src'] if image_tag and image_tag.has_attr('src') else ''
-
-        # Zwracamy listę stringów zgodną z nagłówkami CSV
         return [
+            offer_id,
+            price_num if price_num is not None else '',
+            area_num if area_num is not None else '',
+            rooms_num if rooms_num is not None else '',
             location,
-            address,
-            rooms,
-            area,
-            price_total,
-            price_sqm,
-            owner_type,
-            date_added,
-            photo_count,
-            link,
-            image_url
+            street,
+            'Mieszkanie',
+            is_private,
+            description,
+            link
         ]
 
     except Exception as e:
         print(f"Błąd podczas parsowania ogłoszenia: {e}")
         return None
 
+
 def main(city, pages, output_file):
     """
     Główna funkcja skryptu.
-    
+
     Args:
         city (str): Nazwa miasta do scrapowania (np. 'lodz', 'warszawa', 'wroclaw')
         pages (int): Liczba stron do przetworzenia
@@ -103,108 +164,75 @@ def main(city, pages, output_file):
     print(f"Rozpoczynam scraping {BASE_URL} dla miasta: {city}...")
     all_data = []
 
-    # Używamy sesji, aby utrzymać połączenie i nagłówki
     with requests.Session() as session:
         session.headers.update(HTTP_HEADERS)
 
-        # Pętla przez określoną liczbę stron
         for page_num in range(1, pages + 1):
-            url = f'https://adresowo.pl/mieszkania/{city}/_l{page_num}'
-            print(f"Przetwarzanie strony {page_num}/{pages}: {url}")
+            url = f'{BASE_URL}/mieszkania/{city}/_l{page_num}'
+            print(f"Pobieranie strony {page_num}/{pages}...")
 
             try:
                 response = session.get(url, timeout=10)
-                # Sprawdzamy, czy żądanie się powiodło (kod 2xx)
                 response.raise_for_status()
 
                 soup = BeautifulSoup(response.text, 'html.parser')
 
-                # Znajdujemy wszystkie kontenery ogłoszeń na stronie
-                listings = soup.select('section.search-results__item')
+                # Karty ofert – tak jak w referencji: div z data-offer-card
+                offers = soup.find_all('div', {'data-offer-card': True})
 
-                if not listings:
-                    print(f"  -> Nie znaleziono ogłoszeń na stronie {page_num}. Prawdopodobnie strona nie istnieje.")
-                    break # Przerywamy pętlę, jeśli nie ma więcej ogłoszeń
+                if not offers:
+                    print(f"  -> Nie znaleziono ogłoszeń na stronie {page_num}.")
+                    break
 
-                print(f"  -> Znaleziono {len(listings)} ogłoszeń.")
+                print(f"  -> Znaleziono {len(offers)} ogłoszeń.")
 
-                # Przechodzimy przez każde ogłoszenie
-                for item in listings:
-                    data_row = parse_listing(item)
-                    if data_row:
-                        all_data.append(data_row)
+                for offer in offers:
+                    row = parse_listing(offer)
+                    if row:
+                        all_data.append(row)
 
-                # Mała przerwa, aby nie obciążać serwera
-                time.sleep(0.5)
+                time.sleep(1)
 
             except requests.RequestException as e:
-                print(f"Błąd podczas pobierania strony {url}: {e}")
-                continue # Przechodzimy do następnej strony
+                print(f"Błąd na stronie {page_num}: {e}")
+                continue
 
-    # --- Zapis do pliku CSV ---
     if all_data:
-        print(f"\nZakończono scraping. Zapisywanie {len(all_data)} ogłoszeń do pliku {output_file}...")
+        print(f"\nZakończono! Zapisywanie {len(all_data)} ogłoszeń do {output_file}...")
         try:
-            # Tworzymy katalog, jeśli nie istnieje
             output_dir = os.path.dirname(output_file)
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
-            
+
             with open(output_file, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(CSV_HEADERS)  # Zapis nagłówka
-                writer.writerows(all_data)    # Zapis wszystkich danych
-            print(f"Pomyślnie zapisano dane w pliku: {output_file}")
+                writer.writerow(CSV_HEADERS)
+                writer.writerows(all_data)
+            print(f"Dane zapisano do: {output_file}")
         except IOError as e:
-            print(f"Błąd podczas zapisu do pliku {output_file}: {e}")
+            print(f"Błąd zapisu do {output_file}: {e}")
     else:
-        print("\nNie zebrano żadnych danych.")
+        print("Nie zebrano żadnych danych.")
 
-# Uruchomienie głównej funkcji
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Scraper ogłoszeń nieruchomości z adresowo.pl',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
-Przykłady użycia:
-  # Scrapuj 8 stron dla Łodzi (domyślne, zapisuje do scraper/data/)
-  python scrape.py
-  
-  # Scrapuj 5 stron dla Warszawy
-  python scrape.py --city warszawa --pages 5
-  
-  # Scrapuj 10 stron dla Wrocławia z własną nazwą pliku
-  python scrape.py --city wroclaw --pages 10 --output scraper/data/ogloszenia_wroclaw.csv
-        '''
+Przykłady:
+  python scaper.py
+  python scaper.py --city warszawa --pages 5
+  python scaper.py --city wroclaw --pages 10 --output data/oferty_wroclaw.csv
+'''
     )
-    
-    parser.add_argument(
-        '--city',
-        type=str,
-        default='lodz',
-        help='Nazwa miasta do scrapowania (np. lodz, warszawa, wroclaw). Domyślnie: lodz'
-    )
-    
-    parser.add_argument(
-        '--pages',
-        type=int,
-        default=8,
-        help='Liczba stron do przetworzenia. Domyślnie: 8'
-    )
-    
-    parser.add_argument(
-        '--output',
-        type=str,
-        default=None,
-        help='Ścieżka do pliku wyjściowego CSV. Domyślnie: scraper/data/ogloszenia_{city}.csv'
-    )
-    
+    parser.add_argument('--city', type=str, default='lodz',
+                        help='Miasto (np. lodz, warszawa, wroclaw). Domyślnie: lodz')
+    parser.add_argument('--pages', type=int, default=8,
+                        help='Liczba stron. Domyślnie: 8')
+    parser.add_argument('--output', type=str, default=None,
+                        help='Plik CSV. Domyślnie: data/ogloszenia_{city}.csv')
+
     args = parser.parse_args()
-    
-    # Jeśli nie podano nazwy pliku, generujemy ją na podstawie miasta i zapisujemy w data/
-    if args.output:
-        output_file = args.output
-    else:
-        output_file = f'data/ogloszenia_{args.city}.csv'
-    
+    output_file = args.output or f'data/ogloszenia_{args.city}.csv'
     main(args.city, args.pages, output_file)
