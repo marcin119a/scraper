@@ -6,10 +6,8 @@ import time
 import argparse
 import os
 
-# Stałe
 BASE_URL = 'https://adresowo.pl'
 
-# Nagłówki CSV (zgodne ze strukturą z adresowo.pl)
 CSV_HEADERS = [
     'ID',
     'Cena',
@@ -23,7 +21,6 @@ CSV_HEADERS = [
     'Link'
 ]
 
-# Nagłówki HTTP, aby udawać przeglądarkę i uniknąć blokady
 HTTP_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
@@ -84,17 +81,14 @@ def _parse_rooms(s):
 def parse_listing(offer):
     """
     Pobiera dane z pojedynczego elementu ogłoszenia (div[data-offer-card]).
-    Używa selektorów zgodnych ze strukturą HTML adresowo.pl.
-    Zwraca listę stringów lub None w przypadku błędu.
+    Zwraca słownik lub None w przypadku błędu.
     """
     try:
         text = offer.get_text()
         text_lower = text.lower()
 
-        # ID oferty
         offer_id = offer.get('data-id', '')
 
-        # Cena, metraż, pokoje – z p.flex-auto.text-base.text-neutral-800 > span.font-bold
         stats = offer.select('p.flex-auto.text-base.text-neutral-800')
         price = ''
         area = ''
@@ -109,50 +103,41 @@ def parse_listing(offer):
             bold = stats[2].find('span', class_='font-bold')
             rooms = _clean(bold.get_text()) if bold else ''
 
-        # Link do oferty
         link_tag = offer.find('a', href=True)
         link = ''
         if link_tag and link_tag.get('href'):
             href = link_tag['href']
             link = (BASE_URL + href) if not href.startswith('http') else href
 
-        # Lokalizacja i ulica
         location_el = offer.select_one('span.line-clamp-1.font-bold')
         location = _clean(location_el.get_text()) if location_el else ''
         street_el = offer.select_one('span.line-clamp-1.text-neutral-900')
         street = _clean(street_el.get_text()) if street_el else ''
 
-        # Bez pośredników
         is_private = 'Tak' if 'bez pośredników' in text_lower else 'Nie'
 
-        # Opis (krótki w karcie)
         desc_el = offer.select_one('p.line-clamp-4')
         description = _clean(desc_el.get_text()) if desc_el else ''
 
-        # Konwersje liczbowo do CSV (puste gdy nie uda się sparsować)
-        price_num = _parse_price(price)
-        area_num = _parse_area(area)
-        rooms_num = _parse_rooms(rooms)
-
-        return [
-            offer_id,
-            price_num if price_num is not None else '',
-            area_num if area_num is not None else '',
-            rooms_num if rooms_num is not None else '',
-            location,
-            street,
-            'Mieszkanie',
-            is_private,
-            description,
-            link
-        ]
+        return {
+            'ID': offer_id,
+            'Cena': _parse_price(price) if _parse_price(price) is not None else '',
+            'Metraż': _parse_area(area) if _parse_area(area) is not None else '',
+            'Pokoje': _parse_rooms(rooms) if _parse_rooms(rooms) is not None else '',
+            'Lokalizacja': location,
+            'Ulica': street,
+            'Typ': 'Mieszkanie',
+            'Bez Pośredników': is_private,
+            'Opis': description,
+            'Link': link,
+        }
 
     except Exception as e:
         print(f"Błąd podczas parsowania ogłoszenia: {e}")
         return None
 
 
-def main(city, pages, output_file):
+def scrape(city, pages, output_file):
     """
     Główna funkcja skryptu.
 
@@ -169,15 +154,13 @@ def main(city, pages, output_file):
 
         for page_num in range(1, pages + 1):
             url = f'{BASE_URL}/mieszkania/{city}/_l{page_num}'
-            print(f"Pobieranie strony {page_num}/{pages}...")
+            print(f"Przetwarzanie strony {page_num}/{pages}: {url}")
 
             try:
                 response = session.get(url, timeout=10)
                 response.raise_for_status()
 
                 soup = BeautifulSoup(response.text, 'html.parser')
-
-                # Karty ofert – tak jak w referencji: div z data-offer-card
                 offers = soup.find_all('div', {'data-offer-card': True})
 
                 if not offers:
@@ -205,8 +188,8 @@ def main(city, pages, output_file):
                 os.makedirs(output_dir, exist_ok=True)
 
             with open(output_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(CSV_HEADERS)
+                writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+                writer.writeheader()
                 writer.writerows(all_data)
             print(f"Dane zapisano do: {output_file}")
         except IOError as e:
@@ -221,9 +204,9 @@ if __name__ == '__main__':
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Przykłady:
-  python scaper.py
-  python scaper.py --city warszawa --pages 5
-  python scaper.py --city wroclaw --pages 10 --output data/oferty_wroclaw.csv
+  python scraper.py
+  python scraper.py --city warszawa --pages 5
+  python scraper.py --city wroclaw --pages 10 --output data/oferty_wroclaw.csv
 '''
     )
     parser.add_argument('--city', type=str, default='lodz',
@@ -235,4 +218,4 @@ Przykłady:
 
     args = parser.parse_args()
     output_file = args.output or f'data/ogloszenia_{args.city}.csv'
-    main(args.city, args.pages, output_file)
+    scrape(args.city, args.pages, output_file)

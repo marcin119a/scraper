@@ -10,6 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      matrix:
+        city: [lodz, krakow, wroclaw]
+        pages: [8]
+        include:
+          - city: warszawa
+            pages: 12
 
     steps:
       - name: Checkout repo
@@ -23,25 +30,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run scraper
-        run: python scaper.py --city lodz --pages 8 --output data/ogloszenia_lodz.csv
+      - name: Run scraper for ${{ matrix.city }}
+        run: python scraper.py --city ${{ matrix.city }} --pages ${{ matrix.pages }} --output data/ogloszenia_${{ matrix.city }}.csv
 
-      - name: Run scraper
-        run: python scaper.py --city krakow --pages 8 --output data/ogloszenia_krakow.csv
-      
-      - name: Run scraper
-        run: python scaper.py --city wroclaw --pages 8 --output data/ogloszenia_wroclaw.csv
-      
-      - name: Run scraper
-        run: python scaper.py --city warszawa --pages 12 --output data/ogloszenia_warszawa.csv
-      
       - name: Commit changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           git add -f data/*.csv
-          git commit -m "Update scraped data [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "No changes to commit"
+          git commit -m "Update scraped data [${{ matrix.city }}] [$(date +'%Y-%m-%d %H:%M:%S')]" || echo "No changes to commit"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
