@@ -13,6 +13,10 @@ jobs:
     strategy:
       matrix:
         city: [lodz, krakow, wroclaw]
+        pages: [8]
+        include:
+          - city: warszawa
+            pages: 12
 
     steps:
       - name: Checkout repo
@@ -27,7 +31,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run scraper for ${{ matrix.city }}
-        run: python scraper.py --city ${{ matrix.city }} --pages 8 --output data/ogloszenia_${{ matrix.city }}.csv
+        run: python scraper.py --city ${{ matrix.city }} --pages ${{ matrix.pages }} --output data/ogloszenia_${{ matrix.city }}.csv
 
       - name: Commit changes
         run: |

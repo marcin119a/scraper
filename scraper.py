@@ -1,3 +1,4 @@
+import re
 import requests
 import csv
 from bs4 import BeautifulSoup
@@ -8,71 +9,127 @@ import os
 BASE_URL = 'https://adresowo.pl'
 
 CSV_HEADERS = [
-    'locality',
-    'street',
-    'rooms',
-    'area',
-    'price_total_zl',
-    'price_sqm_zl',
-    'owner_type',
-    'date_posted',
-    'photo_count',
-    'url',
-    'image_url'
+    'ID',
+    'Cena',
+    'Metraż',
+    'Pokoje',
+    'Lokalizacja',
+    'Ulica',
+    'Typ',
+    'Bez Pośredników',
+    'Opis',
+    'Link'
 ]
 
 HTTP_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
 
 
-def parse_listing(item):
+def _clean(s):
+    """Usuwa twarde spacje i normalizuje białe znaki."""
+    if not s:
+        return ''
+    return s.replace('\xa0', ' ').strip()
+
+
+def _parse_price(s):
+    """Cena ze stringa (np. '635 000 zł') → int zł lub None."""
+    if not s:
+        return None
+    digits = re.sub(r'[^\d]', '', s)
+    if not digits:
+        return None
+    try:
+        n = int(digits)
+        return n if n > 0 else None
+    except ValueError:
+        return None
+
+
+def _parse_area(s):
+    """Metraż ze stringa (np. '50 m²', '50,25 m²') → float m² lub None."""
+    if not s:
+        return None
+    s = s.replace(',', '.')
+    m = re.search(r'[\d.]+', s)
+    if not m:
+        return None
+    try:
+        n = float(m.group(0))
+        return n if n > 0 else None
+    except ValueError:
+        return None
+
+
+def _parse_rooms(s):
+    """Liczba pokoi ze stringa (np. '3', '3 pok.') → int lub None."""
+    if not s:
+        return None
+    m = re.search(r'^\s*(\d+)\s*(?:pok\.?)?\s*$', s.strip(), re.IGNORECASE)
+    if not m:
+        m = re.search(r'(\d+)\s*pok', s, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+        return n if n > 0 else None
+    except (ValueError, IndexError):
+        return None
+
+
+def parse_listing(offer):
     """
-    Pobiera dane z pojedynczego elementu ogłoszenia (tagu <section>).
+    Pobiera dane z pojedynczego elementu ogłoszenia (div[data-offer-card]).
     Zwraca słownik lub None w przypadku błędu.
     """
     try:
-        header = item.select_one('.result-info__header')
-        location = header.strong.get_text(strip=True) if header and header.strong else ''
-        address = header.select_one('.result-info__address').get_text(strip=True) if header and header.select_one('.result-info__address') else ''
+        text = offer.get_text()
+        text_lower = text.lower()
 
-        basics = item.select('.result-info__basic:not(.result-info__basic--owner)')
-        rooms = basics[0].b.get_text(strip=True) if len(basics) > 0 and basics[0].b else ''
-        area = basics[1].b.get_text(strip=True) if len(basics) > 1 and basics[1].b else ''
+        offer_id = offer.get('data-id', '')
 
-        price_total_tag = item.select_one('.result-info__price--total span')
-        price_total = price_total_tag.get_text(strip=True).replace('\xa0', '') if price_total_tag else ''
+        stats = offer.select('p.flex-auto.text-base.text-neutral-800')
+        price = ''
+        area = ''
+        rooms = ''
+        if len(stats) > 0:
+            bold = stats[0].find('span', class_='font-bold')
+            price = _clean(bold.get_text()) if bold else ''
+        if len(stats) > 1:
+            bold = stats[1].find('span', class_='font-bold')
+            area = _clean(bold.get_text()) if bold else ''
+        if len(stats) > 2:
+            bold = stats[2].find('span', class_='font-bold')
+            rooms = _clean(bold.get_text()) if bold else ''
 
-        price_sqm_tag = item.select_one('.result-info__price--per-sqm span')
-        price_sqm = price_sqm_tag.get_text(strip=True).replace('\xa0', '') if price_sqm_tag else ''
+        link_tag = offer.find('a', href=True)
+        link = ''
+        if link_tag and link_tag.get('href'):
+            href = link_tag['href']
+            link = (BASE_URL + href) if not href.startswith('http') else href
 
-        owner_tag = item.select_one('.result-info__basic--owner')
-        owner_type = owner_tag.get_text(strip=True) if owner_tag else 'Pośrednik'
+        location_el = offer.select_one('span.line-clamp-1.font-bold')
+        location = _clean(location_el.get_text()) if location_el else ''
+        street_el = offer.select_one('span.line-clamp-1.text-neutral-900')
+        street = _clean(street_el.get_text()) if street_el else ''
 
-        date_added_tag = item.select_one('.result-photo__date span')
-        date_added = date_added_tag.get_text(strip=True) if date_added_tag else ''
+        is_private = 'Tak' if 'bez pośredników' in text_lower else 'Nie'
 
-        photo_count_tag = item.select_one('.result-photo__photos')
-        photo_count = photo_count_tag.get_text(strip=True) if photo_count_tag else ''
-
-        link_tag = item.select_one('a')
-        link = BASE_URL + link_tag['href'] if link_tag and link_tag.has_attr('href') else ''
-
-        image_tag = item.select_one('.result-photo__image')
-        image_url = image_tag['src'] if image_tag and image_tag.has_attr('src') else ''
+        desc_el = offer.select_one('p.line-clamp-4')
+        description = _clean(desc_el.get_text()) if desc_el else ''
 
         return {
-            'locality': location,
-            'street': address,
-            'rooms': rooms,
-            'area': area,
-            'price_total_zl': price_total,
-            'price_sqm_zl': price_sqm,
-            'owner_type': owner_type,
-            'date_posted': date_added,
-            'photo_count': photo_count,
-            'url': link,
-            'image_url': image_url,
+            'ID': offer_id,
+            'Cena': _parse_price(price) if _parse_price(price) is not None else '',
+            'Metraż': _parse_area(area) if _parse_area(area) is not None else '',
+            'Pokoje': _parse_rooms(rooms) if _parse_rooms(rooms) is not None else '',
+            'Lokalizacja': location,
+            'Ulica': street,
+            'Typ': 'Mieszkanie',
+            'Bez Pośredników': is_private,
+            'Opis': description,
+            'Link': link,
         }
 
     except Exception as e:
@@ -104,27 +161,27 @@ def scrape(city, pages, output_file):
                 response.raise_for_status()
 
                 soup = BeautifulSoup(response.text, 'html.parser')
-                listings = soup.select('section.search-results__item')
+                offers = soup.find_all('div', {'data-offer-card': True})
 
-                if not listings:
-                    print(f"  -> Nie znaleziono ogłoszeń na stronie {page_num}. Prawdopodobnie strona nie istnieje.")
+                if not offers:
+                    print(f"  -> Nie znaleziono ogłoszeń na stronie {page_num}.")
                     break
 
-                print(f"  -> Znaleziono {len(listings)} ogłoszeń.")
+                print(f"  -> Znaleziono {len(offers)} ogłoszeń.")
 
-                for item in listings:
-                    row = parse_listing(item)
+                for offer in offers:
+                    row = parse_listing(offer)
                     if row:
                         all_data.append(row)
 
-                time.sleep(0.5)
+                time.sleep(1)
 
             except requests.RequestException as e:
-                print(f"Błąd podczas pobierania strony {url}: {e}")
+                print(f"Błąd na stronie {page_num}: {e}")
                 continue
 
     if all_data:
-        print(f"\nZakończono scraping. Zapisywanie {len(all_data)} ogłoszeń do pliku {output_file}...")
+        print(f"\nZakończono! Zapisywanie {len(all_data)} ogłoszeń do {output_file}...")
         try:
             output_dir = os.path.dirname(output_file)
             if output_dir:
@@ -134,33 +191,31 @@ def scrape(city, pages, output_file):
                 writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
                 writer.writeheader()
                 writer.writerows(all_data)
-            print(f"Pomyślnie zapisano dane w pliku: {output_file}")
+            print(f"Dane zapisano do: {output_file}")
         except IOError as e:
-            print(f"Błąd podczas zapisu do pliku {output_file}: {e}")
+            print(f"Błąd zapisu do {output_file}: {e}")
     else:
-        print("\nNie zebrano żadnych danych.")
+        print("Nie zebrano żadnych danych.")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Scraper ogłoszeń nieruchomości z adresowo.pl',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
-Przykłady użycia:
+Przykłady:
   python scraper.py
   python scraper.py --city warszawa --pages 5
-  python scraper.py --city wroclaw --pages 10 --output data/ogloszenia_wroclaw.csv
-        '''
+  python scraper.py --city wroclaw --pages 10 --output data/oferty_wroclaw.csv
+'''
     )
-
     parser.add_argument('--city', type=str, default='lodz',
-                        help='Nazwa miasta do scrapowania (np. lodz, warszawa, wroclaw). Domyślnie: lodz')
+                        help='Miasto (np. lodz, warszawa, wroclaw). Domyślnie: lodz')
     parser.add_argument('--pages', type=int, default=8,
-                        help='Liczba stron do przetworzenia. Domyślnie: 8')
+                        help='Liczba stron. Domyślnie: 8')
     parser.add_argument('--output', type=str, default=None,
-                        help='Ścieżka do pliku wyjściowego CSV. Domyślnie: data/ogloszenia_{city}.csv')
+                        help='Plik CSV. Domyślnie: data/ogloszenia_{city}.csv')
 
     args = parser.parse_args()
     output_file = args.output or f'data/ogloszenia_{args.city}.csv'
-
     scrape(args.city, args.pages, output_file)
